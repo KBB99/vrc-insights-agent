@@ -1,0 +1,41 @@
+default_agent: vrc_insights_agent
+agents:
+  vrc_insights_agent:
+    name: vrc_insights_agent
+    entrypoint: /Users/kentonblacutt/Documents/vrc/villagerunclub-website/train-platform/insights-agent/agent.py
+    platform: linux/arm64
+    container_runtime: docker
+    source_path: /Users/kentonblacutt/Documents/vrc/villagerunclub-website/train-platform/insights-agent
+    aws:
+      execution_role: arn:aws:iam::609061237212:role/AmazonBedrockAgentCoreSDKRuntime-us-east-1-6677540e30
+      execution_role_auto_create: false
+      account: '609061237212'
+      region: us-east-1
+      ecr_repository: 609061237212.dkr.ecr.us-east-1.amazonaws.com/bedrock-agentcore-vrc_insights_agent
+      ecr_auto_create: false
+      network_configuration:
+        network_mode: PUBLIC
+        network_mode_config: null
+      protocol_configuration:
+        server_protocol: HTTP
+      observability:
+        enabled: true
+    bedrock_agentcore:
+      agent_id: vrc_insights_agent-Tdnt4wBJle
+      agent_arn: arn:aws:bedrock-agentcore:us-east-1:609061237212:runtime/vrc_insights_agent-Tdnt4wBJle
+      agent_session_id: null
+    codebuild:
+      project_name: bedrock-agentcore-vrc_insights_agent-builder
+      execution_role: arn:aws:iam::609061237212:role/AmazonBedrockAgentCoreSDKCodeBuild-us-east-1-6677540e30
+      source_bucket: bedrock-agentcore-codebuild-sources-609061237212-us-east-1
+    memory:
+      mode: STM_ONLY
+      memory_id: vrc_insights_agent_mem-q1TYxG9Jjh
+      memory_arn: arn:aws:bedrock-agentcore:us-east-1:609061237212:memory/vrc_insights_agent_mem-q1TYxG9Jjh
+      memory_name: vrc_insights_agent_mem
+      event_expiry_days: 30
+      first_invoke_memory_check_done: false
+      was_created_by_toolkit: true
+    authorizer_configuration: null
+    request_header_configuration: null
+    oauth_configuration: null
