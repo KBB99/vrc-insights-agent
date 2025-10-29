@@ -926,6 +926,14 @@ async def invoke(payload):
     if not session_id:
         raise ValueError('Missing session_id from AgentCore runtime context')
 
+    # Create memory session for manual persistence
+    memory_id = os.getenv('BEDROCK_AGENTCORE_MEMORY_ID')
+    session_manager = MemorySessionManager(memory_id=memory_id, region_name='us-east-1')
+    memory_session = session_manager.create_memory_session(
+        actor_id=session_id,
+        session_id=session_id
+    )
+
     # Create agent instance with AgentCoreMemorySessionManager
     # AgentCore Memory automatically loads existing messages and persists new ones
     agent = create_agent_with_session(
@@ -936,18 +944,37 @@ async def invoke(payload):
     # Add user context to message
     context_message = f"[User Context: strava_user_id={strava_user_id}]\n\n{user_message}"
 
-    # Use agent() directly which triggers hooks, but stream the response manually
-    # The hooks will save messages to AgentCore Memory
-    response = await agent.run_async(context_message)
+    # Save user message to memory immediately
+    memory_session.add_turns(messages=[ConversationalMessage(user_message, MessageRole.USER)])
 
-    # Stream the response text in chunks for the frontend
-    response_text = response.text if hasattr(response, 'text') else str(response)
-    chunk_size = 50
-    for i in range(0, len(response_text), chunk_size):
-        chunk = response_text[i:i+chunk_size]
-        yield f"data: {json.dumps({'text': chunk, 'type': 'content'})}\\n\\n"
+    # Use streaming for real-time UX (cache bust: v20 - yield events directly per docs)
+    response_chunks = []
+    async for event in agent.stream_async(context_message):
+        # Yield event directly - AgentCore runtime handles all formatting
+        yield event
 
-    yield f"data: {json.dumps({'type': 'done'})}\\n\\n"
+        # Collect text chunks for memory persistence
+        if isinstance(event, str):
+            response_chunks.append(event)
+        elif isinstance(event, dict):
+            # Extract text from nested event structure for memory persistence
+            if 'event' in event:
+                chunk_event = event['event']
+                if 'contentBlockDelta' in chunk_event:
+                    delta = chunk_event['contentBlockDelta'].get('delta', {})
+                    text = delta.get('text', '')
+                    if text:
+                        response_chunks.append(text)
+        elif hasattr(event, 'text'):
+            response_chunks.append(event.text)
+        elif hasattr(event, 'content'):
+            response_chunks.append(event.content)
+
+    # Save assistant response to memory after streaming completes
+    full_response = ''.join(response_chunks)
+    if full_response:
+        memory_session.add_turns(messages=[ConversationalMessage(full_response, MessageRole.ASSISTANT)])
+        print(f"✅ Manually saved assistant response to memory ({len(full_response)} chars)")
 
 
 if __name__ == "__main__":
