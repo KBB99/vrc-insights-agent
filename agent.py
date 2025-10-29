@@ -636,12 +636,11 @@ def create_agent_with_session(session_id: str, strava_user_id: str) -> Agent:
         session_id=session_id
     )
 
-    # Create Strands agent with memory hooks
+    # Create Strands agent without hooks (manual memory persistence in invoke function)
     # Use fixed agent_id based on user to ensure consistent message tracking
     agent = Agent(
         agent_id=f"v-coach-{strava_user_id}",  # Fixed agent ID per user
         name="V - Village Run Club Coach",
-        hooks=[MemoryHookProvider(memory_session)],  # Use custom memory hooks
         model="global.anthropic.claude-sonnet-4-5-20250929-v1:0",
         system_prompt="""You are V, the supportive and knowledgeable coach for Village Run Club members.
 
