@@ -3,6 +3,7 @@
 import os
 import json
 import re
+import uuid
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 import boto3
@@ -356,9 +357,43 @@ def save_training_plan(strava_user_id: str, plan_json: str) -> str:
 
         goal = plan_data.get('goal', 'Training Plan')
         created_at = plan_data.get('created_at', datetime.now().strftime('%Y-%m-%d'))
+
+        # Generate unique plan ID for this training plan
+        plan_id = str(uuid.uuid4())
+        print(f"📝 Creating new training plan with ID: {plan_id}")
+
+        # Archive old plans: set is_active=False for all existing plans for this user
+        try:
+            # Query all existing plans for this user
+            existing_plans = dynamodb.query(
+                TableName='vrc-training-plans',
+                KeyConditionExpression='user_id = :uid',
+                ExpressionAttributeValues={':uid': {'S': strava_user_id}}
+            )
+
+            # Update each to is_active=False
+            archived_count = 0
+            for item in existing_plans.get('Items', []):
+                week_start = item['week_start_date']['S']
+                dynamodb.update_item(
+                    TableName='vrc-training-plans',
+                    Key={
+                        'user_id': {'S': strava_user_id},
+                        'week_start_date': {'S': week_start}
+                    },
+                    UpdateExpression='SET is_active = :false',
+                    ExpressionAttributeValues={':false': {'BOOL': False}}
+                )
+                archived_count += 1
+
+            if archived_count > 0:
+                print(f"📦 Archived {archived_count} weeks from previous plan(s)")
+        except Exception as e:
+            print(f"⚠️ Warning: Failed to archive old plans: {e}")
+
         weeks_saved = 0
 
-        # Save each week to DynamoDB
+        # Save each week to DynamoDB with new plan_id and is_active=True
         for week in plan_data['weeks']:
             week_start = week.get('week_start')
             workouts = week.get('workouts', [])
@@ -385,6 +420,8 @@ def save_training_plan(strava_user_id: str, plan_json: str) -> str:
                 Item={
                     'user_id': {'S': strava_user_id},
                     'week_start_date': {'S': week_start},
+                    'plan_id': {'S': plan_id},
+                    'is_active': {'BOOL': True},
                     'goal': {'S': goal},
                     'created_at': {'S': created_at},
                     'plan_data': {'S': json.dumps({
@@ -395,9 +432,12 @@ def save_training_plan(strava_user_id: str, plan_json: str) -> str:
             )
             weeks_saved += 1
 
+        print(f"✅ Saved {weeks_saved} weeks for new training plan")
+
         return json.dumps({
             'success': True,
             'message': f'Training plan saved successfully! {weeks_saved} weeks stored.',
+            'plan_id': plan_id,
             'goal': goal,
             'weeks': weeks_saved
         })
@@ -446,6 +486,13 @@ def get_training_plan(strava_user_id: str, week_start_date: str = None) -> str:
 
         print(f"🔍 get_training_plan: DynamoDB response has Item: {'Item' in response}")
 
+        # Check if item exists and is active
+        if 'Item' in response:
+            is_active = response['Item'].get('is_active', {}).get('BOOL', False)
+            if not is_active:
+                print(f"🔍 get_training_plan: Plan found but is_active=False (archived)")
+                response = {}  # Treat as not found
+
         # If not found, search nearby dates (this week) in case plan was saved with wrong date
         if 'Item' not in response:
             print(f"🔍 get_training_plan: No exact match found, searching nearby dates for the same week...")
@@ -465,9 +512,15 @@ def get_training_plan(strava_user_id: str, week_start_date: str = None) -> str:
                 )
 
                 if 'Item' in response:
-                    print(f"🔍 get_training_plan: Found plan at {check_date} (should be {week_start_date})")
-                    week_start_date = check_date  # Use the date where we found it
-                    break
+                    # Check if this one is active
+                    is_active = response['Item'].get('is_active', {}).get('BOOL', False)
+                    if is_active:
+                        print(f"🔍 get_training_plan: Found active plan at {check_date} (should be {week_start_date})")
+                        week_start_date = check_date  # Use the date where we found it
+                        break
+                    else:
+                        print(f"🔍 get_training_plan: Found plan at {check_date} but is_active=False")
+                        response = {}  # Keep searching
 
         if 'Item' not in response:
             return json.dumps({
@@ -529,8 +582,13 @@ def update_workout_in_plan(strava_user_id: str, week_start_date: str, day: str, 
         if 'Item' not in response:
             return json.dumps({'error': f'No plan found for week of {week_start_date}'})
 
-        # Parse plan data
+        # Check if plan is active
         item = response['Item']
+        is_active = item.get('is_active', {}).get('BOOL', False)
+        if not is_active:
+            return json.dumps({'error': f'Plan found but is not active (archived). Cannot update archived plans.'})
+
+        # Parse plan data
         plan_data = json.loads(item['plan_data']['S'])
         workouts = plan_data.get('workouts', [])
 
@@ -551,12 +609,14 @@ def update_workout_in_plan(strava_user_id: str, week_start_date: str, day: str, 
         if not workout_found:
             return json.dumps({'error': f'No workout found for {day} in week of {week_start_date}'})
 
-        # Save updated plan back to DynamoDB
+        # Save updated plan back to DynamoDB, preserving all fields
         dynamodb.put_item(
             TableName='vrc-training-plans',
             Item={
                 'user_id': {'S': strava_user_id},
                 'week_start_date': {'S': week_start_date},
+                'plan_id': item.get('plan_id', {'S': 'legacy'}),  # Preserve plan_id
+                'is_active': item.get('is_active', {'BOOL': True}),  # Preserve is_active
                 'goal': item.get('goal', {'S': 'Training Plan'}),
                 'created_at': item.get('created_at', {'S': datetime.now().strftime('%Y-%m-%d')}),
                 'plan_data': {'S': json.dumps(plan_data)}
