@@ -614,12 +614,13 @@ class MemoryHookProvider(HookProvider):
 
 
 # Agent factory function - creates agent per-request with AgentCore Memory session persistence
-def create_agent_with_session(session_id: str, strava_user_id: str) -> Agent:
+def create_agent_with_session(session_id: str, strava_user_id: str, conversation_history: list = None) -> Agent:
     """Create a new Agent instance with AgentCore Memory persistence using MemorySession.
 
     Args:
         session_id: Unique session identifier for this conversation
         strava_user_id: Strava user ID for agent identification
+        conversation_history: Optional list of previous messages to load into agent
 
     Returns:
         Agent: Configured Agent instance with AgentCore Memory session persistence
@@ -642,6 +643,7 @@ def create_agent_with_session(session_id: str, strava_user_id: str) -> Agent:
         agent_id=f"v-coach-{strava_user_id}",  # Fixed agent ID per user
         name="V - Village Run Club Coach",
         model="global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        messages=conversation_history or [],  # Load conversation history
         system_prompt="""You are V, the supportive and knowledgeable coach for Village Run Club members.
 
 # WHO YOU ARE
@@ -933,11 +935,36 @@ async def invoke(payload):
         session_id=session_id
     )
 
-    # Create agent instance with AgentCoreMemorySessionManager
-    # AgentCore Memory automatically loads existing messages and persists new ones
+    # Retrieve conversation history from AgentCore Memory
+    conversation_history = []
+    try:
+        recent_turns = memory_session.get_last_k_turns(k=20)  # Get last 20 turns (10 exchanges)
+        for turn in recent_turns:
+            for message in turn:
+                role = message.get('role', '')
+                content = message.get('content', {})
+                if isinstance(content, dict):
+                    text = content.get('text', '')
+                elif isinstance(content, str):
+                    text = content
+                else:
+                    text = str(content)
+
+                if text:
+                    # Format for Strands Agent: {"role": "user/assistant", "content": [{"text": "..."}]}
+                    conversation_history.append({
+                        "role": role.lower(),
+                        "content": [{"text": text}]
+                    })
+        print(f"📚 Loaded {len(conversation_history)} messages from conversation history")
+    except Exception as e:
+        print(f"⚠️ Failed to load conversation history: {e}")
+
+    # Create agent instance with conversation history
     agent = create_agent_with_session(
         session_id=session_id,
-        strava_user_id=strava_user_id
+        strava_user_id=strava_user_id,
+        conversation_history=conversation_history
     )
 
     # Add user context to message
