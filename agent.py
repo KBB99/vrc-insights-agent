@@ -314,6 +314,8 @@ def save_training_plan(strava_user_id: str, plan_json: str) -> str:
 
     Use this to store training plans that you've created for the athlete.
 
+    ⚠️ CRITICAL: week_start MUST be a Monday (calculate the Monday of each week)!
+
     Args:
         strava_user_id: Strava user ID
         plan_json: JSON string with structure:
@@ -322,7 +324,7 @@ def save_training_plan(strava_user_id: str, plan_json: str) -> str:
             "created_at": "2025-10-20",
             "weeks": [
                 {
-                    "week_start": "2025-10-21",
+                    "week_start": "2025-10-21",  # MUST be a Monday!
                     "workouts": [
                         {
                             "day": "Monday",
@@ -362,6 +364,20 @@ def save_training_plan(strava_user_id: str, plan_json: str) -> str:
             workouts = week.get('workouts', [])
 
             if not week_start:
+                continue
+
+            # Validate and auto-correct week_start to ensure it's a Monday
+            try:
+                date_obj = datetime.strptime(week_start, '%Y-%m-%d')
+                if date_obj.weekday() != 0:  # 0 = Monday
+                    # Calculate the Monday of this week
+                    days_since_monday = date_obj.weekday()
+                    monday = date_obj - timedelta(days=days_since_monday)
+                    corrected_date = monday.strftime('%Y-%m-%d')
+                    print(f"⚠️ Auto-corrected week_start from {week_start} ({date_obj.strftime('%A')}) to {corrected_date} (Monday)")
+                    week_start = corrected_date
+            except ValueError:
+                print(f"⚠️ Invalid date format for week_start: {week_start}")
                 continue
 
             dynamodb.put_item(
@@ -415,8 +431,11 @@ def get_training_plan(strava_user_id: str, week_start_date: str = None) -> str:
             days_since_monday = today.weekday()
             monday = today - timedelta(days=days_since_monday)
             week_start_date = monday.strftime('%Y-%m-%d')
+            print(f"🔍 get_training_plan: Today is {today.strftime('%Y-%m-%d (%A)')}, calculated Monday: {week_start_date}")
 
-        # Query DynamoDB
+        print(f"🔍 get_training_plan: Querying for user_id={strava_user_id}, week_start_date={week_start_date}")
+
+        # First try exact Monday match
         response = dynamodb.get_item(
             TableName='vrc-training-plans',
             Key={
@@ -424,6 +443,31 @@ def get_training_plan(strava_user_id: str, week_start_date: str = None) -> str:
                 'week_start_date': {'S': week_start_date}
             }
         )
+
+        print(f"🔍 get_training_plan: DynamoDB response has Item: {'Item' in response}")
+
+        # If not found, search nearby dates (this week) in case plan was saved with wrong date
+        if 'Item' not in response:
+            print(f"🔍 get_training_plan: No exact match found, searching nearby dates for the same week...")
+            # Check dates from Monday to Sunday of this week
+            monday = datetime.strptime(week_start_date, '%Y-%m-%d')
+            for day_offset in range(7):  # Monday through Sunday
+                check_date = (monday + timedelta(days=day_offset)).strftime('%Y-%m-%d')
+                if check_date == week_start_date:
+                    continue  # Already checked Monday
+
+                response = dynamodb.get_item(
+                    TableName='vrc-training-plans',
+                    Key={
+                        'user_id': {'S': strava_user_id},
+                        'week_start_date': {'S': check_date}
+                    }
+                )
+
+                if 'Item' in response:
+                    print(f"🔍 get_training_plan: Found plan at {check_date} (should be {week_start_date})")
+                    week_start_date = check_date  # Use the date where we found it
+                    break
 
         if 'Item' not in response:
             return json.dumps({
@@ -737,6 +781,7 @@ When an athlete mentions a goal (race, PR, fitness milestone), offer to create a
    - Any constraints? (time, injuries, travel)
 
 2. **Do the math - YOU figure this out:**
+   - Calculate the MONDAY date for each week (week_start MUST be Mondays!)
    - Use calculate() to determine appropriate paces (easy, tempo, interval, long run)
    - Design weekly structure (easy runs, workouts, long runs, rest days)
    - Plan mileage progression (typically 8-16 weeks, build gradually)
